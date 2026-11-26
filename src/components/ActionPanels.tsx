@@ -48,11 +48,27 @@ export default function ActionPanels({ panel, onProductClick, onSelectFilter }: 
 
   if (noActionable) return null;
 
+  // 빈 패널이 같은 크기로 그리드를 차지하면 첫 화면의 상당 부분이 빈 상자가 된다 —
+  // 내용 있는 패널만 그리드에 두고, 빈 패널은 한 줄 요약으로 접는다.
+  const emptyNotes: string[] = [];
+  if (groups.drops.length === 0) emptyNotes.push('전일 대비 하락 없음');
+  if (groups.rises.length === 0) emptyNotes.push('전일 대비 상승 없음');
+  if (groups.failed.length === 0) emptyNotes.push('연속 수집 실패 없음');
+  if (groups.missing.length === 0) emptyNotes.push('URL 누락·미수집 없음');
+  const filledCount = 4 - emptyNotes.length;
+  const gridCols =
+    filledCount >= 4
+      ? 'sm:grid-cols-2 lg:grid-cols-4'
+      : filledCount === 3
+        ? 'sm:grid-cols-3'
+        : filledCount === 2
+          ? 'sm:grid-cols-2'
+          : '';
+
   return (
-    <section
-      aria-label="운영 액션 패널"
-      className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4 sm:mb-6"
-    >
+    <section aria-label="운영 액션 패널" className="mb-4 sm:mb-6">
+      <div className={`grid grid-cols-1 ${gridCols} gap-3`}>
+      {groups.drops.length > 0 && (
       <Panel
         title="가격 하락 Top"
         emoji="📉"
@@ -71,7 +87,9 @@ export default function ActionPanels({ panel, onProductClick, onSelectFilter }: 
           />
         ))}
       </Panel>
+      )}
 
+      {groups.rises.length > 0 && (
       <Panel
         title="가격 급등 Top"
         emoji="📈"
@@ -90,7 +108,9 @@ export default function ActionPanels({ panel, onProductClick, onSelectFilter }: 
           />
         ))}
       </Panel>
+      )}
 
+      {groups.failed.length > 0 && (
       <Panel
         title="수집 실패"
         emoji="⚠"
@@ -107,7 +127,7 @@ export default function ActionPanels({ panel, onProductClick, onSelectFilter }: 
             onProductClick={onProductClick}
             right={
               <span
-                className="text-[10px] text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 whitespace-nowrap"
+                className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 whitespace-nowrap"
                 title={(item.warnings ?? [])
                   .map(
                     (w) =>
@@ -122,12 +142,16 @@ export default function ActionPanels({ panel, onProductClick, onSelectFilter }: 
           />
         ))}
       </Panel>
+      )}
 
+      {groups.missing.length > 0 && (
       <Panel
         title="URL 누락 / 미수집"
         emoji="❓"
         tone="muted"
         totalCount={groups.counts.missing}
+        alwaysShowCount
+        subtitle={`URL 없음 ${groups.counts.missing_no_url.toLocaleString('ko-KR')} · 미수집 ${groups.counts.missing_not_collected.toLocaleString('ko-KR')}`}
         emptyText="모든 상품 정상 수집"
         filterKey="missing"
         onSelectFilter={onSelectFilter}
@@ -136,20 +160,30 @@ export default function ActionPanels({ panel, onProductClick, onSelectFilter }: 
           const missingChannels: Channel[] = (['coupang', 'naver', 'danawa'] as Channel[]).filter(
             (ch) => !item.urls[ch]
           );
+          // URL이 하나라도 있으면 할 일은 "수집 확인"이다 — 예전엔 URL이 다 있어도 "0/3 누락"으로 보였다
+          const label =
+            missingChannels.length === 3
+              ? 'URL 없음'
+              : missingChannels.length === 0
+                ? '미수집'
+                : `미수집 · URL ${3 - missingChannels.length}/3`;
           return (
             <PanelRow
               key={item.product_id}
               item={item}
               onProductClick={onProductClick}
               right={
-                <span className="text-[10px] text-gray-500 whitespace-nowrap">
-                  {missingChannels.length === 3 ? 'URL 없음' : `${missingChannels.length}/3 누락`}
-                </span>
+                <span className="text-[11px] text-gray-500 whitespace-nowrap">{label}</span>
               }
             />
           );
         })}
       </Panel>
+      )}
+      </div>
+      {emptyNotes.length > 0 && (
+        <p className="mt-2 text-xs text-gray-500">✓ {emptyNotes.join(' · ')}</p>
+      )}
     </section>
   );
 }
@@ -163,6 +197,10 @@ interface PanelProps {
   children: React.ReactNode;
   filterKey?: ChangeFilter;
   onSelectFilter?: (filter: ChangeFilter) => void;
+  /** 제목 아래 한 줄 보조 설명 */
+  subtitle?: string;
+  /** Top N 이하여도 총 건수를 표시 */
+  alwaysShowCount?: boolean;
 }
 
 function Panel({
@@ -174,6 +212,8 @@ function Panel({
   children,
   filterKey,
   onSelectFilter,
+  subtitle,
+  alwaysShowCount = false,
 }: PanelProps) {
   const toneClass = {
     down: 'border-blue-200 bg-blue-50/40',
@@ -205,9 +245,9 @@ function Panel({
         <h3 className={`text-xs font-semibold ${titleColor} flex items-center gap-1.5 min-w-0`}>
           <span aria-hidden>{emoji}</span>
           <span className="truncate">{title}</span>
-          {totalCount > TOP_N && (
-            <span className="text-[10px] text-gray-500 font-normal">
-              총 {totalCount}건
+          {(alwaysShowCount || totalCount > TOP_N) && (
+            <span className="text-[11px] text-gray-500 font-normal">
+              총 {totalCount.toLocaleString('ko-KR')}건
             </span>
           )}
         </h3>
@@ -222,6 +262,7 @@ function Panel({
           </button>
         )}
       </div>
+      {subtitle && <div className="-mt-1 mb-2 text-[11px] text-gray-500">{subtitle}</div>}
       {isEmpty ? (
         <div className="text-xs text-gray-400 py-2">{emptyText}</div>
       ) : (
@@ -245,7 +286,7 @@ function PanelRow({ item, onProductClick, right, warnChannels }: PanelRowProps) 
     <div className="flex items-center gap-2 min-w-0">
       <span className="flex-1 min-w-0 truncate text-xs text-gray-800" title={item.product_name}>
         {item.brand_name && (
-          <span className="text-[10px] font-semibold text-purple-700 mr-1">
+          <span className="text-xs font-semibold text-purple-700 mr-1">
             [{item.brand_name}]
           </span>
         )}
@@ -264,7 +305,7 @@ function PanelRow({ item, onProductClick, right, warnChannels }: PanelRowProps) 
         </span>
       )}
       {cheapest && (
-        <span className="text-[10px] text-gray-600 tabular-nums shrink-0">
+        <span className="text-xs text-gray-600 tabular-nums shrink-0">
           {cheapest.price.toLocaleString('ko-KR')}원
         </span>
       )}
@@ -301,7 +342,7 @@ function DeltaBadge({ pct }: { pct: number }) {
     : 'text-red-700 bg-red-50 border-red-200';
   return (
     <span
-      className={`text-[10px] font-semibold tabular-nums px-1.5 py-0.5 rounded border whitespace-nowrap ${cls}`}
+      className={`text-xs font-semibold tabular-nums px-1.5 py-0.5 rounded border whitespace-nowrap ${cls}`}
     >
       {isDown ? '▼' : '▲'}
       {Math.abs(pct).toFixed(1)}%

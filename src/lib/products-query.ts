@@ -1,8 +1,9 @@
-import type {
-  ProductOpsFilter,
-  ProductSortKey,
-  ProductStatusFilter,
-  SortDirection,
+import {
+  PRODUCT_OPS_FILTERS,
+  type ProductOpsFilter,
+  type ProductSortKey,
+  type ProductStatusFilter,
+  type SortDirection,
 } from '@/types/database';
 import type { createServiceClient } from '@/lib/supabase';
 
@@ -36,7 +37,7 @@ export function parseProductListFilters(searchParams: URLSearchParams): ProductL
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
-    ops: ops === 'noUrl' || ops === 'partialUrl' || ops === 'noBrand' ? ops : 'none',
+    ops: PRODUCT_OPS_FILTERS.includes(ops as ProductOpsFilter) ? (ops as ProductOpsFilter) : 'none',
     sort: sort === 'name' || sort === 'status' ? sort : 'created',
     dir: dir === 'asc' ? 'asc' : 'desc',
   };
@@ -126,6 +127,12 @@ export function applyProductFilters<T extends { or: any; eq: any; is: any; in: a
       .or('coupang_url.not.is.null,naver_url.not.is.null,danawa_url.not.is.null');
   } else if (filters.ops === 'noBrand') {
     q = q.is('brand_id', null);
+  } else if (filters.ops === 'missingCoupang') {
+    q = q.is('coupang_url', null);
+  } else if (filters.ops === 'missingNaver') {
+    q = q.is('naver_url', null);
+  } else if (filters.ops === 'missingDanawa') {
+    q = q.is('danawa_url', null);
   }
 
   return q;

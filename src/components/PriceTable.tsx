@@ -1,15 +1,17 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import type { PriceWithChange, Channel } from '@/types/database';
+import type { PriceWithChange, Channel, DashboardSortKey } from '@/types/database';
 import PriceChangeIndicator from './PriceChangeIndicator';
 import Sparkline from './Sparkline';
 import CollectProductButton from './CollectProductButton';
 import {
   cheapestChannel,
   changePercent,
+  lastKnownCheapest,
   productChangePercent,
+  shortDate,
 } from '@/lib/price-utils';
 
 interface PriceTableProps {
@@ -18,6 +20,9 @@ interface PriceTableProps {
   collectingIds?: Set<string>;
   globalCollecting?: boolean;
   onCollectProduct?: (id: string) => void;
+  /** 서버 정렬 상태 — data는 이미 이 순서로 정렬돼 온다 */
+  sort: DashboardSortKey;
+  onSortChange: (next: DashboardSortKey) => void;
 }
 
 const CHANNEL_LABELS: Record<Channel, string> = {
@@ -34,7 +39,6 @@ const CHANNEL_COLORS: Record<Channel, string> = {
 
 const CHANNELS: Channel[] = ['coupang', 'naver', 'danawa'];
 
-type SortKey = 'name' | 'cheapest' | 'changePct';
 type SortDir = 'asc' | 'desc';
 
 export default function PriceTable({
@@ -43,37 +47,15 @@ export default function PriceTable({
   collectingIds,
   globalCollecting,
   onCollectProduct,
+  sort,
+  onSortChange,
 }: PriceTableProps) {
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const sorted = data;
 
-  const sorted = useMemo(() => {
-    const arr = [...data];
-    arr.sort((a, b) => {
-      const va = sortValue(a, sortKey);
-      const vb = sortValue(b, sortKey);
-      if (va === null && vb === null) return 0;
-      if (va === null) return 1;
-      if (vb === null) return -1;
-      if (typeof va === 'string' && typeof vb === 'string') {
-        return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
-      }
-      const na = va as number;
-      const nb = vb as number;
-      return sortDir === 'asc' ? na - nb : nb - na;
-    });
-    return arr;
-  }, [data, sortKey, sortDir]);
-
-  const handleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortKey(key);
-      setSortDir(key === 'name' ? 'asc' : 'desc');
-    }
-  };
+  // 헤더 클릭 → 서버 정렬 키. 같은 헤더를 다시 누르면 방향만 뒤집는다.
+  const priceActive = sort === 'price_asc' || sort === 'price_desc';
+  const changeActive = sort === 'drop' || sort === 'rise';
 
   const toggleRow = (id: string) => {
     setExpanded((prev) => {
@@ -98,25 +80,34 @@ export default function PriceTable({
             <th className="w-8 px-2 py-3"></th>
             <SortableHeader
               label="상품명"
-              active={sortKey === 'name'}
-              dir={sortDir}
-              onClick={() => handleSort('name')}
+              active={sort === 'name'}
+              dir="asc"
+              onClick={() => onSortChange(sort === 'name' ? 'default' : 'name')}
               align="left"
             />
             <SortableHeader
               label="최저가"
-              active={sortKey === 'cheapest'}
-              dir={sortDir}
-              onClick={() => handleSort('cheapest')}
+              active={priceActive}
+              dir={sort === 'price_desc' ? 'desc' : 'asc'}
+              onClick={() => onSortChange(sort === 'price_asc' ? 'price_desc' : 'price_asc')}
               align="right"
             />
             <SortableHeader
               label="변동률"
-              active={sortKey === 'changePct'}
-              dir={sortDir}
-              onClick={() => handleSort('changePct')}
+              active={changeActive}
+              dir={sort === 'rise' ? 'desc' : 'asc'}
+              onClick={() => onSortChange(sort === 'drop' ? 'rise' : 'drop')}
               align="right"
             />
+            {CHANNELS.map((ch) => (
+              <th
+                key={ch}
+                scope="col"
+                className="hidden lg:table-cell px-3 py-3 text-right text-sm font-semibold text-gray-700"
+              >
+                {CHANNEL_LABELS[ch]}
+              </th>
+            ))}
             <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">
               7일 추이
             </th>
@@ -151,19 +142,6 @@ export default function PriceTable({
       </table>
     </div>
   );
-}
-
-function sortValue(
-  item: PriceWithChange,
-  key: SortKey
-): string | number | null {
-  if (key === 'name') return item.product_name;
-  if (key === 'cheapest') {
-    const c = cheapestChannel(item);
-    return c ? c.price : null;
-  }
-  if (key === 'changePct') return productChangePercent(item);
-  return null;
 }
 
 interface SortableHeaderProps {
@@ -226,6 +204,7 @@ function RowGroup({
   const cheapestStoreName =
     cheapest && cheapest.channel !== 'coupang' ? cheapest.store_name : null;
   const hasFailures = !!item.warnings && item.warnings.length > 0;
+  const stale = cheapest ? null : lastKnownCheapest(item);
 
   return (
     <>
@@ -251,7 +230,7 @@ function RowGroup({
           <div className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2 flex-wrap">
               {item.brand_name && (
-                <span className="text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
+                <span className="text-xs font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
                   {item.brand_name}
                 </span>
               )}
@@ -284,11 +263,15 @@ function RowGroup({
               <div className="flex items-center justify-end gap-2">
                 {cheapestChannelKey && (
                   <span
-                    className="text-[10px] font-bold px-1.5 py-0.5 rounded text-white"
-                    style={{ backgroundColor: CHANNEL_COLORS[cheapestChannelKey] }}
+                    className="inline-flex items-center gap-1 text-xs font-semibold px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-900"
                     title={`${CHANNEL_LABELS[cheapestChannelKey]} 최저`}
                   >
-                    👑 {CHANNEL_LABELS[cheapestChannelKey]}
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: CHANNEL_COLORS[cheapestChannelKey] }}
+                      aria-hidden
+                    />
+                    {CHANNEL_LABELS[cheapestChannelKey]}
                   </span>
                 )}
                 <span className="font-semibold text-gray-900 tabular-nums">
@@ -297,15 +280,27 @@ function RowGroup({
               </div>
               {cheapestStoreName && (
                 <span
-                  className="text-[10px] text-gray-500 truncate max-w-[140px]"
+                  className="text-xs text-gray-500 truncate max-w-[140px]"
                   title={cheapestStoreName}
                 >
                   @ {cheapestStoreName}
                 </span>
               )}
             </div>
+          ) : stale ? (
+            <div
+              className="flex flex-col items-end gap-0.5"
+              title="오늘·어제 수집값이 없어 마지막으로 수집된 가격을 보여줍니다"
+            >
+              <span className="font-semibold text-gray-400 tabular-nums">
+                {stale.price.toLocaleString('ko-KR')}원
+              </span>
+              <span className="text-xs text-amber-700">
+                {shortDate(stale.date)} 기준 · {CHANNEL_LABELS[stale.channel]}
+              </span>
+            </div>
           ) : (
-            <span className="text-gray-400">-</span>
+            <span className="text-xs text-gray-400">수집 이력 없음</span>
           )}
         </td>
         <td className="px-4 py-3 text-right">
@@ -315,6 +310,26 @@ function RowGroup({
             <span className="text-xs text-gray-400">-</span>
           )}
         </td>
+        {/* 채널별 가격 — 넓은 화면에서 행을 펼치지 않고 세 채널을 바로 비교 */}
+        {CHANNELS.map((ch) => {
+          const cp = item.prices.find((p) => p.channel === ch);
+          const isCheapest = cheapestChannelKey === ch;
+          return (
+            <td key={ch} className="hidden lg:table-cell px-3 py-3 text-right tabular-nums text-sm">
+              {cp && cp.price > 0 ? (
+                <span className={isCheapest ? 'font-semibold text-gray-900' : 'text-gray-700'}>
+                  {cp.price.toLocaleString('ko-KR')}
+                </span>
+              ) : cp?.last_known ? (
+                <span className="text-gray-400" title={`${cp.last_known.date} 수집값`}>
+                  {cp.last_known.price.toLocaleString('ko-KR')}
+                </span>
+              ) : (
+                <span className="text-gray-300">{item.urls[ch] ? '-' : '미등록'}</span>
+              )}
+            </td>
+          );
+        })}
         <td className="px-4 py-3">
           <div className="flex justify-center">
             <Sparkline values={sparkline ?? []} width={80} height={24} />
@@ -334,7 +349,8 @@ function RowGroup({
       {isExpanded && (
         <tr className="bg-gray-50/50 border-b">
           <td></td>
-          <td colSpan={5} className="px-4 py-3">
+          {/* 이름·최저가·변동률 + 채널 3열 + 추이·수집 = 8열 (좁은 화면에선 채널 열이 숨지만 초과 colSpan은 무해) */}
+          <td colSpan={8} className="px-4 py-3">
             <ChannelDetailGrid item={item} cheapestChannel={cheapestChannelKey} />
           </td>
         </tr>
@@ -362,10 +378,12 @@ function ChannelDetailGrid({
         const inner = (
           <>
             <div className="flex items-center justify-between mb-2">
-              <span
-                className="text-xs font-semibold"
-                style={{ color: CHANNEL_COLORS[ch] }}
-              >
+              <span className="inline-flex items-center gap-1 text-xs font-semibold text-gray-700">
+                <span
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ backgroundColor: CHANNEL_COLORS[ch] }}
+                  aria-hidden
+                />
                 {CHANNEL_LABELS[ch]}
                 {isCheapest && <span className="ml-1">👑</span>}
               </span>
@@ -409,8 +427,24 @@ function ChannelDetailGrid({
                   </div>
                 )}
               </>
+            ) : channelPrice?.last_known ? (
+              <>
+                <div className="text-base font-bold text-gray-400 tabular-nums">
+                  {channelPrice.last_known.price.toLocaleString('ko-KR')}원
+                </div>
+                <div className="mt-1 text-xs text-amber-700">
+                  {channelPrice.last_known.date} 수집값 (최근 이틀 수집 없음)
+                </div>
+                {channelPrice.last_known.store_name && (
+                  <div className="mt-1 text-xs text-gray-500">
+                    {channelPrice.last_known.store_name}
+                  </div>
+                )}
+              </>
             ) : (
-              <div className="text-sm text-gray-400">데이터 없음</div>
+              <div className="text-sm text-gray-400">
+                {url ? '수집 이력 없음' : 'URL 미등록'}
+              </div>
             )}
           </>
         );

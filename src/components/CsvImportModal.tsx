@@ -552,7 +552,7 @@ export default function CsvImportModal({
                       <td className={`px-2 py-1 ${brandClass}`}>{brandLabel}</td>
                       <td className="px-2 py-1 text-center">
                         <span
-                          className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${badge.color}`}
+                          className={`inline-block px-1.5 py-0.5 rounded text-xs font-semibold ${badge.color}`}
                         >
                           {badge.text}
                         </span>

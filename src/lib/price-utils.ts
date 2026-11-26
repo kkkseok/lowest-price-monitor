@@ -1,5 +1,7 @@
 import type {
+  Channel,
   ChannelPrice,
+  DashboardSortKey,
   PanelEntry,
   PanelGroups,
   PriceWithChange,
@@ -30,6 +32,32 @@ export function cheapestChannel(item: PriceWithChange): ChannelPrice | null {
   const valid = activePrices(item);
   if (valid.length === 0) return null;
   return valid.reduce((min, curr) => (curr.price < min.price ? curr : min));
+}
+
+/**
+ * 현재가가 하나도 없을 때 표시할 "마지막으로 알려진 최저가" (표시 전용).
+ * 현재가가 하나라도 있으면 null — 오래된 값이 현재 최저가와 섞여 비교되지 않게 한다.
+ */
+export function lastKnownCheapest(
+  item: PriceWithChange
+): { channel: Channel; price: number; store_name: string | null; date: string } | null {
+  if (activePrices(item).length > 0) return null;
+  let best: { channel: Channel; price: number; store_name: string | null; date: string } | null =
+    null;
+  for (const p of item.prices) {
+    const lk = p.last_known;
+    if (!lk) continue;
+    if (!best || lk.price < best.price) {
+      best = { channel: p.channel, price: lk.price, store_name: lk.store_name, date: lk.date };
+    }
+  }
+  return best;
+}
+
+/** 'YYYY-MM-DD' → 'M/D' */
+export function shortDate(dateKey: string): string {
+  const [, m, d] = dateKey.split('-');
+  return m && d ? `${Number(m)}/${Number(d)}` : dateKey;
 }
 
 /** 상품의 최고가 채널 (없으면 null) */
@@ -64,12 +92,14 @@ export function hasFailure(item: PriceWithChange): boolean {
   return !!item.warnings && item.warnings.length > 0;
 }
 
+export function hasAnyUrl(item: PriceWithChange): boolean {
+  return !!item.urls.coupang || !!item.urls.naver || !!item.urls.danawa;
+}
+
 /** URL이 하나도 없거나 모든 채널 가격이 0 — ActionPanels의 'URL 누락 / 미수집'과 동일 조건 */
 export function hasMissing(item: PriceWithChange): boolean {
-  const urlsAny =
-    !!item.urls.coupang || !!item.urls.naver || !!item.urls.danawa;
   const noPrice = item.prices.every((p) => p.price <= 0);
-  return !urlsAny || noPrice;
+  return !hasAnyUrl(item) || noPrice;
 }
 
 /** 가격 하락 (1% 이상) — ActionPanels '가격 하락 Top'과 동일 조건 */
@@ -82,6 +112,33 @@ export function hasDrop(item: PriceWithChange, thresholdPct = 1): boolean {
 export function hasRise(item: PriceWithChange, thresholdPct = 1): boolean {
   const pct = productChangePercent(item);
   return pct !== null && pct >= thresholdPct;
+}
+
+/**
+ * 목록 정렬 (제자리 정렬 아님 — 새 배열 반환). 값이 없는 상품은 방향과 무관하게 항상 뒤로.
+ * 'default'는 입력 순서(서버의 등록 최신순)를 그대로 둔다.
+ */
+export function sortItems(items: PriceWithChange[], key: DashboardSortKey): PriceWithChange[] {
+  if (key === 'default') return items;
+  const value = (item: PriceWithChange): number | string | null => {
+    if (key === 'name') return item.product_name;
+    // 화면에 보이는 가격 기준 — 현재가가 없으면 카드에 표시되는 마지막 수집가로 정렬
+    if (key === 'price_asc' || key === 'price_desc') {
+      return cheapestChannel(item)?.price ?? lastKnownCheapest(item)?.price ?? null;
+    }
+    return productChangePercent(item);
+  };
+  const desc = key === 'price_desc' || key === 'rise';
+  return [...items].sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (typeof va === 'string' && typeof vb === 'string') return va.localeCompare(vb, 'ko');
+    const diff = (va as number) - (vb as number);
+    return desc ? -diff : diff;
+  });
 }
 
 export function computeSummary(items: PriceWithChange[]): SummaryStats {
@@ -124,6 +181,8 @@ export function computePanelGroups(
     if (hasMissing(item)) missing.push(item);
   }
 
+  const missingNoUrl = missing.filter((i) => !hasAnyUrl(i)).length;
+
   drops.sort((a, b) => a.pct - b.pct); // 가장 큰 하락 먼저 (음수 작은 값)
   rises.sort((a, b) => b.pct - a.pct);
   failed.sort((a, b) => (b.warnings?.length ?? 0) - (a.warnings?.length ?? 0));
@@ -138,6 +197,8 @@ export function computePanelGroups(
       rises: rises.length,
       failed: failed.length,
       missing: missing.length,
+      missing_no_url: missingNoUrl,
+      missing_not_collected: missing.length - missingNoUrl,
     },
   };
 }

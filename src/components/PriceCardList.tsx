@@ -8,7 +8,9 @@ import CollectProductButton from './CollectProductButton';
 import {
   cheapestChannel,
   changePercent,
+  lastKnownCheapest,
   productChangePercent,
+  shortDate,
 } from '@/lib/price-utils';
 
 interface PriceCardListProps {
@@ -50,6 +52,7 @@ export default function PriceCardList({
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {data.map((item) => {
         const cheapest = cheapestChannel(item);
+        const stale = cheapest ? null : lastKnownCheapest(item);
         const pct = productChangePercent(item);
         const sparkline = sparklineMap?.[item.product_id];
         const failureCount = item.warnings?.length ?? 0;
@@ -62,7 +65,7 @@ export default function PriceCardList({
             <div className="flex items-start justify-between gap-2 mb-3">
               <div className="flex-1 min-w-0">
                 {item.brand_name && (
-                  <div className="text-[10px] font-semibold text-purple-700 mb-0.5">
+                  <div className="text-xs font-semibold text-purple-700 mb-0.5">
                     {item.brand_name}
                   </div>
                 )}
@@ -76,7 +79,7 @@ export default function PriceCardList({
               <div className="flex items-center gap-1 shrink-0">
                 {failureCount > 0 && (
                   <span
-                    className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5"
+                    className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5"
                     title={item
                       .warnings!.map(
                         (w) =>
@@ -107,17 +110,29 @@ export default function PriceCardList({
                       {cheapest.price.toLocaleString('ko-KR')}원
                     </div>
                     <div className="mt-0.5">
-                      <span
-                        className="text-[10px] font-bold px-1.5 py-0.5 rounded text-white mr-1"
-                        style={{ backgroundColor: CHANNEL_COLORS[cheapest.channel] }}
-                      >
-                        👑 {CHANNEL_LABELS[cheapest.channel]}
+                      {/* 쿠팡 빨강 배경이 가격 상승 빨강과 겹쳐 읽혀, 배지는 중립색 + 채널 점으로 */}
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-900 mr-1">
+                        <span
+                          className="w-1.5 h-1.5 rounded-full"
+                          style={{ backgroundColor: CHANNEL_COLORS[cheapest.channel] }}
+                          aria-hidden
+                        />
+                        최저 {CHANNEL_LABELS[cheapest.channel]}
                       </span>
                       <PriceChangeIndicator change={cheapest.change} percent={pct} />
                     </div>
                   </>
+                ) : stale ? (
+                  <div title="오늘·어제 수집값이 없어 마지막으로 수집된 가격을 보여줍니다">
+                    <div className="text-xl font-bold text-gray-400 tabular-nums">
+                      {stale.price.toLocaleString('ko-KR')}원
+                    </div>
+                    <div className="mt-0.5 text-xs text-amber-700">
+                      {shortDate(stale.date)} 기준 · {CHANNEL_LABELS[stale.channel]}
+                    </div>
+                  </div>
                 ) : (
-                  <div className="text-gray-400 text-sm">데이터 없음</div>
+                  <div className="text-gray-400 text-sm">수집 이력 없음</div>
                 )}
               </div>
               <Sparkline values={sparkline ?? []} width={70} height={28} />
@@ -132,10 +147,12 @@ export default function PriceCardList({
 
                 const inner = (
                   <>
-                    <div
-                      className="font-semibold text-[11px]"
-                      style={{ color: CHANNEL_COLORS[ch] }}
-                    >
+                    <div className="inline-flex items-center gap-1 font-semibold text-xs text-gray-600">
+                      <span
+                        className="w-1.5 h-1.5 rounded-full"
+                        style={{ backgroundColor: CHANNEL_COLORS[ch] }}
+                        aria-hidden
+                      />
                       {CHANNEL_LABELS[ch]}
                     </div>
                     {cp && cp.price > 0 ? (
@@ -145,7 +162,7 @@ export default function PriceCardList({
                         </div>
                         {ch !== 'coupang' && cp.store_name && (
                           <div
-                            className="text-[10px] text-gray-500 truncate"
+                            className="text-xs text-gray-500 truncate"
                             title={cp.store_name}
                           >
                             {cp.store_name}
@@ -153,7 +170,7 @@ export default function PriceCardList({
                         )}
                         {channelPct !== null && Math.abs(channelPct) > 0.05 && (
                           <div
-                            className={`text-[10px] ${
+                            className={`text-xs ${
                               channelPct < 0 ? 'text-blue-600' : 'text-red-600'
                             }`}
                           >
@@ -162,6 +179,16 @@ export default function PriceCardList({
                           </div>
                         )}
                       </>
+                    ) : cp?.last_known ? (
+                      <div
+                        className="text-gray-400 tabular-nums text-xs"
+                        title={`${cp.last_known.date} 수집값`}
+                      >
+                        {cp.last_known.price.toLocaleString('ko-KR')}
+                        <div className="text-[11px] text-amber-700">
+                          {shortDate(cp.last_known.date)}
+                        </div>
+                      </div>
                     ) : (
                       <div className="text-gray-400">-</div>
                     )}

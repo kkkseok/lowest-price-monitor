@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type {
   ProductFacets,
   ProductListResponse,
+  ProductMissingByChannel,
   ProductOpsFilter,
   ProductSortKey,
   ProductStatusFilter,
@@ -94,6 +95,9 @@ export function useProductList(query: ProductListQuery) {
   const [facets, setFacets] = useState<ProductFacets | null>(
     initialEntry.data?.facets ?? null
   );
+  const [missingByChannel, setMissingByChannel] = useState<ProductMissingByChannel | null>(
+    initialEntry.data?.missing_by_channel ?? null
+  );
   const mountedRef = useRef(true);
 
   const revalidate = useCallback(
@@ -121,6 +125,7 @@ export function useProductList(query: ProductListQuery) {
         if (!mountedRef.current) return;
         setData(next);
         if (next.facets) setFacets(next.facets);
+        if (next.missing_by_channel) setMissingByChannel(next.missing_by_channel);
         setError(null);
       } catch (err) {
         if (!mountedRef.current) return;
@@ -139,6 +144,7 @@ export function useProductList(query: ProductListQuery) {
       // stale 캐시 즉시 표시 + 백그라운드 갱신
       setData(entry.data);
       if (entry.data.facets) setFacets(entry.data.facets);
+      if (entry.data.missing_by_channel) setMissingByChannel(entry.data.missing_by_channel);
       setLoading(false);
     } else {
       setLoading(true);
@@ -164,6 +170,7 @@ export function useProductList(query: ProductListQuery) {
     page: data?.page ?? query.page,
     pageSize: data?.page_size ?? query.pageSize ?? 50,
     facets,
+    missingByChannel,
     loading,
     error,
     refetch,

@@ -10,6 +10,7 @@ import {
 import type {
   Product,
   ProductFacets,
+  ProductMissingByChannel,
   ProductListResponse,
   CreateProductInput,
 } from '@/types/database';
@@ -83,12 +84,26 @@ export async function GET(request: NextRequest) {
     }
 
     let facets: ProductFacets | undefined;
+    let missingByChannel: ProductMissingByChannel | undefined;
     if (includeFacets) {
-      const { data: facetsData, error: facetsError } = await supabase.rpc('products_facets');
-      if (facetsError) {
-        console.warn(`[api/products GET] facets 조회 실패 (생략): ${facetsError.message}`);
-      } else if (facetsData) {
-        facets = facetsData as ProductFacets;
+      // 채널별 누락 수는 products_facets RPC에 없어 head count 3건으로 보충 (행 전송 없음)
+      const missingCount = (col: 'coupang_url' | 'naver_url' | 'danawa_url') =>
+        supabase.from('products').select('id', { count: 'exact', head: true }).is(col, null);
+      const [facetsRes, mc, mn, md] = await Promise.all([
+        supabase.rpc('products_facets'),
+        missingCount('coupang_url'),
+        missingCount('naver_url'),
+        missingCount('danawa_url'),
+      ]);
+      if (facetsRes.error) {
+        console.warn(`[api/products GET] facets 조회 실패 (생략): ${facetsRes.error.message}`);
+      } else if (facetsRes.data) {
+        facets = facetsRes.data as ProductFacets;
+      }
+      if (!mc.error && !mn.error && !md.error) {
+        missingByChannel = { coupang: mc.count ?? 0, naver: mn.count ?? 0, danawa: md.count ?? 0 };
+      } else {
+        console.warn('[api/products GET] 채널별 누락 카운트 조회 실패 (생략)');
       }
     }
 
@@ -99,6 +114,7 @@ export async function GET(request: NextRequest) {
       page,
       page_size: pageSize,
       ...(facets ? { facets } : {}),
+      ...(missingByChannel ? { missing_by_channel: missingByChannel } : {}),
     };
     return NextResponse.json(response);
   } catch (err) {

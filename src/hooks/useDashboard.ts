@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { ChangeFilterKey, DashboardResponse } from '@/types/database';
+import type { ChangeFilterKey, DashboardResponse, DashboardSortKey } from '@/types/database';
 
 const CACHE_TTL_MS = 30_000;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -11,6 +11,7 @@ export interface DashboardQuery {
   q?: string;
   brandIds?: string[];
   filter?: ChangeFilterKey;
+  sort?: DashboardSortKey;
 }
 
 interface CacheEntry {
@@ -41,6 +42,7 @@ export function buildDashboardParams(query: DashboardQuery, q: string): URLSearc
     params.set('brand_ids', query.brandIds.join(','));
   }
   if (query.filter && query.filter !== 'all') params.set('filter', query.filter);
+  if (query.sort && query.sort !== 'default') params.set('sort', query.sort);
   return params;
 }
 

@@ -137,7 +137,41 @@ export default function BrightDataPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Bright Data 사용량</h1>
+      <h1 className="text-2xl font-bold text-gray-900 mb-4">Bright Data 사용량</h1>
+
+      {/* 한눈 요약 — 사용자가 이 화면에 오는 이유(돈이 얼마 들고, 얼마 남았나)를 맨 위 세 숫자로 */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+        <HeadlineStat
+          label="이번 달 비용"
+          value={formatUsd(official ? official.estimatedCostUsd : usage.month.estimatedCostUsd)}
+          note={official ? '공식 과금 기준' : '로컬 추정'}
+        />
+        <HeadlineStat
+          label="월말 예상"
+          value={
+            officialMonthlyCostUsd !== null
+              ? formatUsd(officialMonthlyCostUsd)
+              : projected
+                ? formatUsd(projected.estimatedCostUsd)
+                : '—'
+          }
+          note={official ? '공식 기준 추정' : '로컬 추정'}
+        />
+        <HeadlineStat
+          label="계정 잔액"
+          value={balance && balance.balance !== null ? formatUsd(balance.balance) : '—'}
+          note={
+            balanceError
+              ? '조회 실패 — 아래 참고'
+              : balanceRunwayMonths !== null
+                ? `현재 페이스로 ${balanceRunwayMonths.toFixed(1)}개월`
+                : balance === null
+                  ? '조회 중'
+                  : ''
+          }
+          danger={!!balanceError || (balanceRunwayMonths !== null && balanceRunwayMonths < 1)}
+        />
+      </div>
 
       {/* 계정 잔액 */}
       <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
@@ -285,7 +319,10 @@ export default function BrightDataPage() {
         )}
       </div>
 
-      <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-6 text-sm text-blue-900">
+      {/* 산정 방식 설명은 매번 읽을 필요가 없어 접어 둔다 */}
+      <details className="bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 mb-6 text-sm text-blue-900">
+        <summary className="cursor-pointer font-medium">비용은 어떻게 계산하나요?</summary>
+        <div className="mt-2">
         비용은 Bright Data 공식 과금 요청 수(/domains/req)를 기준으로 계산합니다
         {official ? '' : ' (공식 API 조회 실패 시 로컬 추정으로 폴백)'}. 로컬 수집 로그는
         재시도·무효응답(200 OK지만 차단·빈 응답)까지 포함해 실제 과금보다 많을 수 있어 참고용
@@ -297,7 +334,8 @@ export default function BrightDataPage() {
           ? `, 월 기본료 ${formatUsd(usage.pricing.monthlyCommitmentUsd)}`
           : ''}
         입니다.
-      </div>
+        </div>
+      </details>
 
       {/* 채널별 분포 */}
       <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
@@ -542,6 +580,30 @@ function BucketCard({
           <div className="font-semibold text-gray-700">{formatBytes(bucket.bytes)}</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function HeadlineStat({
+  label,
+  value,
+  note,
+  danger = false,
+}: {
+  label: string;
+  value: string;
+  note: string;
+  danger?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-lg border p-4 ${danger ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'}`}
+    >
+      <div className="text-xs font-medium text-gray-600">{label}</div>
+      <div className="mt-1 text-2xl font-bold text-gray-900 tabular-nums">{value}</div>
+      {note && (
+        <div className={`mt-0.5 text-xs ${danger ? 'text-red-700' : 'text-gray-500'}`}>{note}</div>
+      )}
     </div>
   );
 }

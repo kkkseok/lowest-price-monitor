@@ -76,6 +76,8 @@ export default function ExportPage() {
   const [hydrated, setHydrated] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [bulkSelecting, setBulkSelecting] = useState(false);
+  // 예전에는 "선택 0개 = 전체"라는 숨은 규칙이라 체크를 다 풀면 오히려 전부 받아졌다 — 범위를 명시한다
+  const [scope, setScope] = useState<'all' | 'pick'>('all');
 
   const [search, setSearchRaw] = useUrlState('q', '', stringCodec);
   const [activeFilter, setActiveFilterRaw] = useUrlState<ActiveFilter>(
@@ -126,7 +128,9 @@ export default function ExportPage() {
 
   // localStorage에서 마지막 선택 복원
   useEffect(() => {
-    setSelected(loadSavedSelection());
+    const saved = loadSavedSelection();
+    setSelected(saved);
+    if (saved.size > 0) setScope('pick');
     setHydrated(true);
   }, []);
 
@@ -139,7 +143,7 @@ export default function ExportPage() {
     } catch {}
   }, [selected, hydrated]);
 
-  const selectAll = selected.size === 0;
+  const selectAll = scope === 'all';
   const rawTooOld = mode === 'raw' && startDate < rawCutoffISO();
 
   const toggleProduct = (id: string, name: string | null) => {
@@ -232,7 +236,7 @@ export default function ExportPage() {
   // 필터 변경 시 디바운스 (500ms) 후 예상 행 수 조회
   useEffect(() => {
     if (!hydrated) return;
-    if (rawTooOld) {
+    if (rawTooOld || (scope === 'pick' && selected.size === 0)) {
       setEstCount(null);
       setEstLoading(false);
       return;
@@ -264,7 +268,7 @@ export default function ExportPage() {
     };
     // buildRequest는 아래 상태들의 순수 함수
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, startDate, endDate, mode, selectAll, selected, rawTooOld]);
+  }, [hydrated, startDate, endDate, mode, selectAll, selected, rawTooOld, scope]);
 
   const fetchData = async (): Promise<ExportRow[]> => {
     const res = await fetch('/api/export', {
@@ -316,7 +320,7 @@ export default function ExportPage() {
   }, [selectAll, selected, products]);
 
   const listTotalPages = Math.max(1, Math.ceil(productTotal / LIST_PAGE_SIZE));
-  const noSelection = false; // 선택 0개 = 전체 export (기존 동작 유지)
+  const noSelection = scope === 'pick' && selected.size === 0;
   const brandCounts = {
     byId: facets?.brands ?? {},
     uncategorized: facets?.uncategorized ?? 0,
@@ -324,7 +328,11 @@ export default function ExportPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">데이터 Export</h1>
+      <h1 className="text-2xl font-bold text-gray-900">가격 이력 내보내기</h1>
+      <p className="mt-1 mb-6 text-sm text-gray-500">
+        기간을 정해 수집 이력을 Excel로 받습니다. 지금 화면의 현재가만 필요하면 대시보드의
+        &lsquo;현재가 Excel&rsquo;을 쓰세요.
+      </p>
 
       {/* 기간 선택 */}
       <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
@@ -371,6 +379,33 @@ export default function ExportPage() {
           </span>
         </div>
 
+        <div className="flex flex-wrap gap-4 mb-4 text-sm" role="radiogroup" aria-label="내보낼 상품 범위">
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="scope"
+              checked={scope === 'all'}
+              onChange={() => setScope('all')}
+            />
+            <span>
+              <span className="font-medium text-gray-900">전체 상품</span>
+              <span className="ml-1 text-gray-500">(활성·비활성 모두)</span>
+            </span>
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="scope"
+              checked={scope === 'pick'}
+              onChange={() => setScope('pick')}
+            />
+            <span className="font-medium text-gray-900">직접 선택</span>
+          </label>
+        </div>
+
+        {scope === 'pick' && (
+        <>
+
         {/* 검색 + 필터 */}
         <div className="flex flex-wrap gap-2 mb-3 items-center">
           <input
@@ -410,14 +445,14 @@ export default function ExportPage() {
             disabled={bulkSelecting}
             className="px-2 py-1 text-blue-600 hover:underline disabled:opacity-50"
           >
-            검색결과 전체 선택 ({productTotal.toLocaleString('ko-KR')})
+            검색 결과 {productTotal.toLocaleString('ko-KR')}개 모두 선택
           </button>
           <button
             onClick={deselectFilteredAll}
             disabled={bulkSelecting}
             className="px-2 py-1 text-blue-600 hover:underline disabled:opacity-50"
           >
-            검색결과 해제
+            검색 결과 선택 해제
           </button>
           <button
             onClick={selectActiveOnly}
@@ -428,10 +463,10 @@ export default function ExportPage() {
           </button>
           <button
             onClick={clearSelection}
-            disabled={bulkSelecting}
+            disabled={bulkSelecting || selected.size === 0}
             className="px-2 py-1 text-blue-600 hover:underline disabled:opacity-50"
           >
-            전체 선택(필터 없음)
+            선택 모두 비우기
           </button>
           {bulkSelecting && <span className="text-gray-400">처리 중…</span>}
         </div>
@@ -484,14 +519,14 @@ export default function ExportPage() {
                   />
                   <span className="flex-1 text-sm text-gray-800 truncate">
                     {product.brand_name && (
-                      <span className="text-[10px] font-semibold text-purple-700 mr-1.5">
+                      <span className="text-xs font-semibold text-purple-700 mr-1.5">
                         [{product.brand_name}]
                       </span>
                     )}
                     {product.name}
                   </span>
                   {!product.is_active && (
-                    <span className="px-1.5 py-0.5 text-[10px] bg-gray-200 text-gray-600 rounded">
+                    <span className="px-1.5 py-0.5 text-xs bg-gray-200 text-gray-600 rounded">
                       비활성
                     </span>
                   )}
@@ -520,6 +555,11 @@ export default function ExportPage() {
               다음 →
             </button>
           </div>
+        )}
+        {selected.size === 0 && (
+          <p className="mt-3 text-sm text-amber-700">상품을 하나 이상 선택하세요.</p>
+        )}
+        </>
         )}
       </div>
 
@@ -565,36 +605,57 @@ export default function ExportPage() {
         </div>
       </div>
 
-      {/* 다운로드 */}
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          onClick={runDownload}
-          disabled={downloading || noSelection || rawTooOld}
-          className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-        >
-          {downloading ? '처리 중...' : 'Excel 다운로드'}
-        </button>
-        <span className="text-sm text-gray-600" aria-live="polite">
-          {rawTooOld ? (
-            <span className="text-amber-700">
-              기간이 원본 보관 범위를 벗어났습니다 — 일별 요약 모드를 사용하세요.
-            </span>
-          ) : estLoading ? (
-            <span className="text-gray-400">예상 행 수 계산 중…</span>
-          ) : estCount === null ? (
-            <span className="text-gray-400">예상 행 수 -</span>
-          ) : (
-            <>
-              예상 <strong className="tabular-nums">{estCount.toLocaleString('ko-KR')}</strong>행
-              {estCount > 50000 && (
-                <span className="ml-2 text-amber-700 text-xs">
-                  ⚠ 행이 많아 Excel 열기가 느릴 수 있습니다
-                </span>
-              )}
-            </>
-          )}
-        </span>
+      {/* 다운로드 요약 바 — 설정이 페이지 위쪽에 흩어져 있어, 무엇을 받게 되는지와 버튼을
+          스크롤 위치와 무관하게 한곳에서 보이게 하단에 고정한다 */}
+      <div className="sticky bottom-0 z-20 -mx-3 sm:-mx-4 mt-6 border-t border-gray-200 bg-white/95 backdrop-blur px-3 sm:px-4 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.04)]">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <dl className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-700 flex-1 min-w-0">
+            <SummaryItem label="기간" value={`${startDate} ~ ${endDate}`} />
+            <SummaryItem
+              label="상품"
+              value={selectAll ? '전체 상품' : `${selected.size.toLocaleString('ko-KR')}개`}
+            />
+            <SummaryItem label="형식" value={mode === 'daily' ? '일별 최저가 요약' : '전체 수집 로그'} />
+            <div className="flex items-baseline gap-1.5" aria-live="polite">
+              <dt className="text-xs text-gray-500">예상</dt>
+              <dd>
+                {rawTooOld ? (
+                  <span className="text-amber-700">원본 보관 범위 밖 — 일별 요약을 선택하세요</span>
+                ) : estLoading ? (
+                  <span className="text-gray-400">계산 중…</span>
+                ) : estCount === null ? (
+                  <span className="text-gray-400">-</span>
+                ) : (
+                  <>
+                    <strong className="tabular-nums">{estCount.toLocaleString('ko-KR')}</strong>행
+                    {estCount > 50000 && (
+                      <span className="ml-2 text-amber-700 text-xs">
+                        ⚠ 행이 많아 Excel 열기가 느릴 수 있습니다
+                      </span>
+                    )}
+                  </>
+                )}
+              </dd>
+            </div>
+          </dl>
+          <button
+            onClick={runDownload}
+            disabled={downloading || noSelection || rawTooOld || estCount === 0}
+            className="shrink-0 px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+          >
+            {downloading ? '처리 중...' : 'Excel 다운로드'}
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function SummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5 min-w-0">
+      <dt className="text-xs text-gray-500 shrink-0">{label}</dt>
+      <dd className="font-medium text-gray-900 truncate">{value}</dd>
     </div>
   );
 }

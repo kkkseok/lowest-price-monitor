@@ -105,7 +105,7 @@ export function validateUrl(
 
 // 채널별로 "동일 상품 페이지"로 해석되는 최소 파라미터만 남겨
 // DB·중복검사 키를 안정화한다. 검색·트래킹 컨텍스트는 모두 제거.
-function normalizeUrl(channel: 'coupang' | 'naver' | 'danawa', raw: string): string {
+export function normalizeUrl(channel: 'coupang' | 'naver' | 'danawa', raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
   let u: URL;

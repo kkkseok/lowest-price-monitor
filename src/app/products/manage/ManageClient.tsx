@@ -24,7 +24,11 @@ import type {
   CreateProductInput,
   Channel,
   ProductIdsResponse,
+  ProductOpsFilter,
 } from '@/types/database';
+import { PRODUCT_OPS_FILTERS } from '@/types/database';
+import ChannelBadges from '@/components/ChannelBadges';
+import InlineUrlEditor from '@/components/InlineUrlEditor';
 
 // xlsx-js-style을 포함한 무거운 모달은 사용자가 "Excel 일괄 등록" 버튼을 눌러
 // open=true가 될 때까지 코드 다운로드를 미룬다.
@@ -33,15 +37,12 @@ const CsvImportModal = dynamic(() => import('@/components/CsvImportModal'), {
 });
 
 type StatusFilter = 'all' | 'active' | 'inactive';
-type OpsPreset = 'none' | 'noUrl' | 'partialUrl' | 'noBrand';
+type OpsPreset = ProductOpsFilter;
 type SortKey = 'name' | 'created' | 'status';
 type SortDir = 'asc' | 'desc';
 
 const STATUS_CODEC = enumCodec<StatusFilter>(['all', 'active', 'inactive'], 'all');
-const OPS_CODEC = enumCodec<OpsPreset>(
-  ['none', 'noUrl', 'partialUrl', 'noBrand'],
-  'none'
-);
+const OPS_CODEC = enumCodec<OpsPreset>(PRODUCT_OPS_FILTERS, 'none');
 // 페이지 번호 URL 동기화 — 1이 기본이라 1일 땐 query에서 제거
 const PAGE_CODEC = {
   parse: (raw: string | null) => {
@@ -111,7 +112,7 @@ export default function ManageProductsPage() {
   };
 
   const brandIdsArr = useMemo(() => [...brandSelection].sort(), [brandSelection]);
-  const { items, total, facets, loading, error, refetch } = useProductList({
+  const { items, total, facets, missingByChannel, loading, error, refetch } = useProductList({
     page,
     pageSize: PAGE_SIZE,
     q: search,
@@ -224,6 +225,9 @@ export default function ManageProductsPage() {
         noUrl: 'URL 미등록',
         partialUrl: 'URL 일부 누락',
         noBrand: '브랜드 미분류',
+        missingCoupang: '쿠팡 URL 없음',
+        missingNaver: '네이버 URL 없음',
+        missingDanawa: '다나와 URL 없음',
       };
       items.push({
         label: opsLabel[opsPreset],
@@ -549,6 +553,22 @@ export default function ManageProductsPage() {
               setOpsPreset(opsPreset === 'partialUrl' ? 'none' : 'partialUrl')
             }
           />
+          {missingByChannel &&
+            (
+              [
+                ['missingCoupang', '쿠팡 없음', missingByChannel.coupang],
+                ['missingNaver', '네이버 없음', missingByChannel.naver],
+                ['missingDanawa', '다나와 없음', missingByChannel.danawa],
+              ] as const
+            ).map(([key, label, count]) => (
+              <OpsChip
+                key={key}
+                label={label}
+                count={count}
+                active={opsPreset === key}
+                onClick={() => setOpsPreset(opsPreset === key ? 'none' : key)}
+              />
+            ))}
           <OpsChip
             label="브랜드 미분류"
             count={opsCounts.noBrand}
@@ -664,6 +684,7 @@ export default function ManageProductsPage() {
                   onToggleSelect={() => toggleSelect(product.id)}
                   onToggleExpand={() => toggleExpand(product.id)}
                   onEdit={() => openEditModal(product)}
+                  onUrlSaved={refetchAll}
                   onToggleActive={() => handleToggleActive(product.id)}
                   onDelete={() =>
                     setConfirmDelete({
@@ -754,6 +775,7 @@ export default function ManageProductsPage() {
                       setActionMenu(actionMenu === product.id ? null : product.id);
                     }}
                     onEdit={() => openEditModal(product)}
+                    onUrlSaved={refetchAll}
                     onToggleActive={() => handleToggleActive(product.id)}
                     onDelete={() =>
                       setConfirmDelete({
@@ -957,6 +979,7 @@ interface ProductRowProps {
   actionMenuOpen: boolean;
   onActionMenuToggle: (e: React.MouseEvent) => void;
   onEdit: () => void;
+  onUrlSaved: () => void;
   onToggleActive: () => void;
   onDelete: () => void;
 }
@@ -970,22 +993,10 @@ function ProductRow({
   actionMenuOpen,
   onActionMenuToggle,
   onEdit,
+  onUrlSaved,
   onToggleActive,
   onDelete,
 }: ProductRowProps) {
-  const channelDots = CHANNELS.map((ch) => {
-    const has = !!product[`${ch}_url` as const];
-    return (
-      <span
-        key={ch}
-        title={`${CHANNEL_LABELS[ch]}: ${has ? '등록됨' : '미등록'}`}
-        className="inline-block w-2.5 h-2.5 rounded-full mr-1"
-        style={{
-          backgroundColor: has ? CHANNEL_COLORS[ch] : '#e5e7eb',
-        }}
-      />
-    );
-  });
 
   return (
     <>
@@ -1023,7 +1034,7 @@ function ProductRow({
           <div className="flex flex-col">
             <div className="flex items-center gap-1.5 flex-wrap">
               {product.brand_name && (
-                <span className="text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
+                <span className="text-xs font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
                   {product.brand_name}
                 </span>
               )}
@@ -1037,7 +1048,13 @@ function ProductRow({
           </div>
         </td>
         <td className="px-3 py-2 text-center" onClick={onToggleExpand}>
-          <span className="inline-flex items-center">{channelDots}</span>
+          <ChannelBadges
+            urls={{
+              coupang: product.coupang_url,
+              naver: product.naver_url,
+              danawa: product.danawa_url,
+            }}
+          />
         </td>
         <td className="px-3 py-2 text-center" onClick={onToggleExpand}>
           <span
@@ -1119,7 +1136,12 @@ function ProductRow({
                         {url}
                       </a>
                     ) : (
-                      <span className="text-gray-300">미등록</span>
+                      <InlineUrlEditor
+                        productId={product.id}
+                        productName={product.name}
+                        channel={ch}
+                        onSaved={onUrlSaved}
+                      />
                     )}
                   </div>
                 );
@@ -1139,6 +1161,7 @@ interface ProductCardMobileProps {
   onToggleSelect: () => void;
   onToggleExpand: () => void;
   onEdit: () => void;
+  onUrlSaved: () => void;
   onToggleActive: () => void;
   onDelete: () => void;
 }
@@ -1150,6 +1173,7 @@ function ProductCardMobile({
   onToggleSelect,
   onToggleExpand,
   onEdit,
+  onUrlSaved,
   onToggleActive,
   onDelete,
 }: ProductCardMobileProps) {
@@ -1176,7 +1200,7 @@ function ProductCardMobile({
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 flex-wrap flex-1">
                 {product.brand_name && (
-                  <span className="text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
+                  <span className="text-xs font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
                     {product.brand_name}
                   </span>
                 )}
@@ -1194,21 +1218,13 @@ function ProductCardMobile({
               </div>
             )}
             <div className="mt-1.5 flex items-center gap-2 text-xs text-gray-500">
-              <span className="inline-flex items-center gap-1">
-                {CHANNELS.map((ch) => {
-                  const has = !!product[`${ch}_url` as const];
-                  return (
-                    <span
-                      key={ch}
-                      title={`${CHANNEL_LABELS[ch]}: ${has ? '등록됨' : '미등록'}`}
-                      className="inline-block w-2 h-2 rounded-full"
-                      style={{
-                        backgroundColor: has ? CHANNEL_COLORS[ch] : '#e5e7eb',
-                      }}
-                    />
-                  );
-                })}
-              </span>
+              <ChannelBadges
+                urls={{
+                  coupang: product.coupang_url,
+                  naver: product.naver_url,
+                  danawa: product.danawa_url,
+                }}
+              />
               <span
                 className={`inline-block px-1.5 py-0.5 text-[11px] rounded-full ${
                   product.is_active
@@ -1252,7 +1268,12 @@ function ProductCardMobile({
                       {url}
                     </a>
                   ) : (
-                    <span className="text-gray-300">미등록</span>
+                    <InlineUrlEditor
+                      productId={product.id}
+                      productName={product.name}
+                      channel={ch}
+                      onSaved={onUrlSaved}
+                    />
                   )}
                 </div>
               );
