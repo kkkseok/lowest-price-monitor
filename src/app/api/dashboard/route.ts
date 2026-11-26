@@ -5,6 +5,7 @@ import type {
   ChangeFilterKey,
   ChannelPrice,
   DashboardResponse,
+  DashboardSortKey,
   FailureWarning,
   PriceLog,
   PriceWithChange,
@@ -16,7 +17,7 @@ import {
   startOfDayKstISO,
   endOfDayKstISO,
 } from '@/lib/date-utils';
-import { selectAllRange, selectByIdChunks } from '@/lib/query-chunk';
+import { chunkArray, selectAllRange, selectByIdChunks } from '@/lib/query-chunk';
 import { resolveSearchBrandIds, UNCATEGORIZED_BRAND_ID } from '@/lib/products-query';
 import {
   computePanelGroups,
@@ -27,6 +28,7 @@ import {
   hasFailure,
   hasMissing,
   hasRise,
+  sortItems,
 } from '@/lib/price-utils';
 
 type Supabase = ReturnType<typeof createServiceClient>;
@@ -34,6 +36,7 @@ type Supabase = ReturnType<typeof createServiceClient>;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const CHANNELS: Channel[] = ['coupang', 'naver', 'danawa'];
+const SORT_KEYS: DashboardSortKey[] = ['default', 'drop', 'rise', 'price_asc', 'price_desc', 'name'];
 
 interface ProductRow {
   id: string;
@@ -82,6 +85,10 @@ export async function GET(request: NextRequest) {
       MAX_PAGE_SIZE,
       Math.max(1, parseInt(searchParams.get('page_size') ?? String(DEFAULT_PAGE_SIZE), 10) || DEFAULT_PAGE_SIZE)
     );
+    const rawSort = searchParams.get('sort');
+    const sortKey: DashboardSortKey = SORT_KEYS.includes(rawSort as DashboardSortKey)
+      ? (rawSort as DashboardSortKey)
+      : 'default';
     const idsOnly = searchParams.get('ids_only') === 'true';
     const wantAll = searchParams.get('all') === 'true';
 
@@ -177,10 +184,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(body);
     }
 
-    // 5) 페이지 슬라이스 + 페이지 상품만 sparkline
+    // 5) 정렬 → 페이지 슬라이스 + 페이지 상품만 sparkline
+    const sortedItems = sortItems(filteredItems, sortKey);
     const pageItems = wantAll
-      ? filteredItems
-      : filteredItems.slice((page - 1) * pageSize, page * pageSize);
+      ? sortedItems
+      : sortedItems.slice((page - 1) * pageSize, page * pageSize);
     const sparklines = wantAll
       ? {}
       : await buildSparklines(supabase, pageItems.map((i) => i.product_id), days);
@@ -294,7 +302,7 @@ async function buildItems(
 
   const warningsMap = await buildWarnings(supabase, productIds);
 
-  return products.map((product) => {
+  const items = products.map((product) => {
     const prices: ChannelPrice[] = CHANNELS.map((channel) => {
       const key = `${product.id}:${channel}`;
 
@@ -348,6 +356,109 @@ async function buildItems(
       warnings: warnings && warnings.length > 0 ? warnings : undefined,
     };
   });
+
+  await attachLastKnown(supabase, items, yesterdayStr);
+  return items;
+}
+
+const LAST_KNOWN_RPC_CHUNK = 300;
+/** RPC 미적용 환경 폴백의 조회 창 — price_daily 최신 일자로부터 이 일수만 거슬러 본다 */
+const LAST_KNOWN_FALLBACK_DAYS = 14;
+
+type LastKnownRow = {
+  product_id: string;
+  channel: Channel;
+  date: string;
+  latest_price: number;
+  latest_store_name: string | null;
+};
+
+/**
+ * 오늘/어제 값이 없는(price=0) 채널에 마지막 수집값을 붙인다 (표시 전용, items를 제자리 수정).
+ * URL이 등록된 채널만 대상 — URL 없는 채널의 과거값은 사용자가 지운 채널일 수 있어 보이지 않는다.
+ */
+async function attachLastKnown(
+  supabase: Supabase,
+  items: PriceWithChange[],
+  beforeKey: string
+): Promise<void> {
+  const needIds = items
+    .filter((item) => item.prices.some((p) => p.price <= 0 && !!item.urls[p.channel]))
+    .map((item) => item.product_id);
+  if (needIds.length === 0) return;
+
+  let rows: LastKnownRow[];
+  try {
+    rows = (
+      await Promise.all(
+        chunkArray(needIds, LAST_KNOWN_RPC_CHUNK).map(async (chunk) => {
+          const { data, error } = await supabase.rpc('latest_price_before', {
+            p_product_ids: chunk,
+            p_before: beforeKey,
+          });
+          if (error) throw new Error(error.message);
+          return (data ?? []) as LastKnownRow[];
+        })
+      )
+    ).flat();
+  } catch (e) {
+    console.warn('[api/dashboard] latest_price_before RPC 실패 — 최근 구간 조회로 폴백:', e);
+    rows = await lastKnownFallback(supabase, needIds, beforeKey);
+  }
+
+  const index = new Map<string, LastKnownRow>();
+  for (const row of rows) index.set(`${row.product_id}:${row.channel}`, row);
+
+  for (const item of items) {
+    for (const p of item.prices) {
+      if (p.price > 0 || !item.urls[p.channel]) continue;
+      const row = index.get(`${item.product_id}:${p.channel}`);
+      if (row && row.latest_price > 0) {
+        p.last_known = {
+          price: row.latest_price,
+          store_name: row.latest_store_name,
+          date: row.date,
+        };
+      }
+    }
+  }
+}
+
+/**
+ * 021 마이그레이션 적용 전 폴백. 이력 전체를 훑지 않도록 price_daily 최신 일자 기준
+ * LAST_KNOWN_FALLBACK_DAYS 창만 본다 — 전역 수집 중단 시 마지막 값들은 이 창에 몰려 있다.
+ */
+async function lastKnownFallback(
+  supabase: Supabase,
+  productIds: string[],
+  beforeKey: string
+): Promise<LastKnownRow[]> {
+  const { data: newest, error } = await supabase
+    .from('price_daily')
+    .select('date')
+    .lt('date', beforeKey)
+    .order('date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!newest?.date) return [];
+
+  const anchor = new Date(`${newest.date}T00:00:00+09:00`);
+  const sinceKey = daysAgoKeyKST(LAST_KNOWN_FALLBACK_DAYS - 1, anchor);
+  const rows = await selectByIdChunks<LastKnownRow>(productIds, (ids, from, to) =>
+    supabase
+      .from('price_daily')
+      .select('product_id, channel, date, latest_price, latest_store_name')
+      .in('product_id', ids)
+      .gte('date', sinceKey)
+      .lt('date', beforeKey)
+      // RPC와 같은 기준 — 정상 로그가 있던 날만
+      .not('min_price', 'is', null)
+      .order('date', { ascending: true })
+      .range(from, to)
+  );
+  // 날짜 오름차순이라 같은 키는 뒤에 오는 행(최신)이 덮어쓴다 — 호출측 Map이 그대로 처리
+  return rows;
 }
 
 /**

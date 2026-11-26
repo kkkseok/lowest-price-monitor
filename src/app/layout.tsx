@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Navigation from "@/components/Navigation";
 import { ToastProvider } from "@/components/Toast";
+import CollectionHealthBanner from "@/components/CollectionHealthBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -38,7 +39,10 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-gray-50">
         <ToastProvider>
           <Navigation />
-          <main className="flex-1 max-w-6xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">{children}</main>
+          <main className="flex-1 max-w-7xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6">
+            <CollectionHealthBanner />
+            {children}
+          </main>
         </ToastProvider>
       </body>
     </html>

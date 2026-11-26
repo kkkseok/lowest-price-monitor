@@ -69,6 +69,19 @@ export interface ChannelPrice {
   change: number | null;
   /** 가격 이상치로 마킹된 로그를 사용한 경우. UI에서 시각적으로 구분. */
   is_suspicious?: boolean;
+  /**
+   * 오늘/어제 값이 없을 때(price=0)만 채워지는 마지막 수집값. 집계·필터·최저가 판정에는
+   * 쓰지 않고 표시 전용이다 — price를 덮어쓰면 오래된 값이 "현재 최저가"로 둔갑한다.
+   */
+  last_known?: LastKnownPrice;
+}
+
+/** 표시 전용 과거 가격 — price_daily의 그날 latest_* */
+export interface LastKnownPrice {
+  price: number;
+  store_name: string | null;
+  /** KST 'YYYY-MM-DD' */
+  date: string;
 }
 
 /** 채널별 URL 맵 */
@@ -93,7 +106,32 @@ export interface PriceWithChange {
 /** 상품 상태 필터 */
 export type ProductStatusFilter = 'all' | 'active' | 'inactive';
 /** 운영 프리셋 필터 — 정리 작업이 필요한 상품 찾기 */
-export type ProductOpsFilter = 'none' | 'noUrl' | 'partialUrl' | 'noBrand';
+export type ProductOpsFilter =
+  | 'none'
+  | 'noUrl'
+  | 'partialUrl'
+  | 'noBrand'
+  /** 특정 채널 URL만 비어 있는 상품 — "일부 누락" 중 어느 채널을 채울지 고를 수 있게 */
+  | 'missingCoupang'
+  | 'missingNaver'
+  | 'missingDanawa';
+
+export const PRODUCT_OPS_FILTERS: ProductOpsFilter[] = [
+  'none',
+  'noUrl',
+  'partialUrl',
+  'noBrand',
+  'missingCoupang',
+  'missingNaver',
+  'missingDanawa',
+];
+
+/** ProductFacets.ops에 없는 채널별 누락 카운트 — products_facets RPC 밖에서 별도 집계 */
+export interface ProductMissingByChannel {
+  coupang: number;
+  naver: number;
+  danawa: number;
+}
 export type ProductSortKey = 'created' | 'name' | 'status';
 export type SortDirection = 'asc' | 'desc';
 
@@ -114,6 +152,8 @@ export interface ProductListResponse {
   page_size: number;
   /** include_facets=true 요청 시에만 동봉 */
   facets?: ProductFacets;
+  /** include_facets=true 요청 시에만 동봉 */
+  missing_by_channel?: ProductMissingByChannel;
 }
 
 /** GET /api/products/ids 응답 — 필터 결과 전체 선택용 (row 없이 id만) */
@@ -193,6 +233,13 @@ export type ChangeFilterKey =
   | 'rises'
   | 'missing';
 
+/**
+ * 메인 목록 정렬 — 서버가 필터 결과 "전체"를 정렬한 뒤 페이지를 자른다.
+ * (클라이언트 정렬은 50개 페이지 안에서만 섞여 "가장 많이 떨어진 상품"을 놓친다)
+ * default: 등록 최신순 / drop: 하락률 큰 순 / rise: 상승률 큰 순
+ */
+export type DashboardSortKey = 'default' | 'drop' | 'rise' | 'price_asc' | 'price_desc' | 'name';
+
 export interface PanelEntry {
   item: PriceWithChange;
   pct: number;
@@ -204,7 +251,16 @@ export interface PanelGroups {
   rises: PanelEntry[];
   failed: PriceWithChange[];
   missing: PriceWithChange[];
-  counts: { drops: number; rises: number; failed: number; missing: number };
+  counts: {
+    drops: number;
+    rises: number;
+    failed: number;
+    missing: number;
+    /** missing 중 URL이 하나도 없는 상품 — 할 일: URL 등록 */
+    missing_no_url: number;
+    /** missing 중 URL은 있는데 현재가가 없는 상품 — 할 일: 수집 확인 */
+    missing_not_collected: number;
+  };
 }
 
 /**
@@ -223,6 +279,35 @@ export interface DashboardResponse {
   panel: PanelGroups;
   brand_counts: { byId: Record<string, number>; uncategorized: number };
   lastCollectedAt: string | null;
+}
+
+/** 수집 상태 등급 — ok: 정상 / delayed: 지연 / stopped: 중단 / unknown: 수집 이력 없음 */
+export type CollectionHealthStatus = 'ok' | 'delayed' | 'stopped' | 'unknown';
+
+/** 수집이 멈춘 것으로 의심되는 원인 1건 */
+export interface CollectionHealthCause {
+  code:
+    | 'workflow_disabled'
+    | 'last_request_failed'
+    | 'brightdata_invalid_token'
+    | 'brightdata_no_balance'
+    | 'brightdata_unreachable';
+  message: string;
+  /** 사용자가 원인을 확인·조치할 수 있는 위치 (내부 경로 또는 외부 URL) */
+  href?: string;
+}
+
+/** GET /api/collect/health 응답 */
+export interface CollectionHealth {
+  status: CollectionHealthStatus;
+  /** price_logs 최신 collected_at */
+  last_collected_at: string | null;
+  /** 성공·실패를 합친 마지막 수집 시도 (price_logs·scrape_errors 중 최신) */
+  last_attempt_at: string | null;
+  /** last_collected_at 기준 경과 시간(시간 단위, 소수 버림). 이력 없으면 null */
+  hours_since_collected: number | null;
+  causes: CollectionHealthCause[];
+  checked_at: string;
 }
 
 /** POST /api/export 요청 body — 대량 product_ids도 URL 한도 없이 전달 */

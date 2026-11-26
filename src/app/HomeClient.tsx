@@ -17,12 +17,19 @@ import SearchInput from '@/components/SearchInput';
 import FilterChips, { type ChangeFilter } from '@/components/FilterChips';
 import BrandFilter, { UNCATEGORIZED_BRAND_ID } from '@/components/BrandFilter';
 import ViewToggle, { type ViewMode } from '@/components/ViewToggle';
+import SortSelect from '@/components/SortSelect';
+import Pagination from '@/components/Pagination';
+import { saveDashboardContext } from '@/lib/dashboard-nav';
 import { exportSnapshotToExcel } from '@/lib/export';
 import { DashboardSkeleton } from '@/components/Skeleton';
 import { useToast } from '@/components/Toast';
+import { classifyHealth } from '@/lib/collection-health';
+import { useCollectionHealth } from '@/hooks/useCollectionHealth';
+import Modal from '@/components/Modal';
 import type {
   Brand,
   DashboardResponse,
+  DashboardSortKey,
   ProductIdsResponse,
 } from '@/types/database';
 import { buildDashboardParams } from '@/hooks/useDashboard';
@@ -34,6 +41,10 @@ const FILTER_CODEC = enumCodec<ChangeFilter>(
   'all'
 );
 const VIEW_CODEC = enumCodec<ViewMode>(['card', 'table'], 'card');
+const SORT_CODEC = enumCodec<DashboardSortKey>(
+  ['default', 'drop', 'rise', 'price_asc', 'price_desc', 'name'],
+  'default'
+);
 const PAGE_CODEC = {
   parse: (raw: string | null) => {
     const n = raw ? parseInt(raw, 10) : 1;
@@ -94,6 +105,14 @@ export default function Home() {
   );
   const [view, setView] = useUrlState<ViewMode>('view', 'card', VIEW_CODEC);
   const [page, setPage] = useUrlState('page', 1, PAGE_CODEC);
+  const [sort, setSortRaw] = useUrlState<DashboardSortKey>('sort', 'default', SORT_CODEC);
+  const setSort = useCallback(
+    (next: DashboardSortKey) => {
+      setSortRaw(next);
+      setPage(1);
+    },
+    [setSortRaw, setPage]
+  );
 
   // 필터가 바뀌면 1페이지로 리셋
   const setSearch = useCallback(
@@ -138,6 +157,7 @@ export default function Home() {
     q: search,
     brandIds: brandIdsArr,
     filter,
+    sort,
   });
   // 두 콜백 호출처를 그대로 두기 위해 분리된 함수명을 유지
   const refetch = refetchDashboard;
@@ -162,6 +182,10 @@ export default function Home() {
   const [collectStatus, setCollectStatus] = useState<CollectStatus | null>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const [collectingIds, setCollectingIds] = useState<Set<string>>(new Set());
+  const [confirmCollect, setConfirmCollect] = useState<
+    { kind: 'all' } | { kind: 'filtered'; count: number } | null
+  >(null);
+  const { health } = useCollectionHealth();
   const toast = useToast();
 
   const stopPolling = useCallback(() => {
@@ -340,6 +364,24 @@ export default function Home() {
     [isActive, collectingIds, toast, refetch, refetchLastCollected]
   );
 
+  // 상세에서 같은 조건의 목록으로 돌아오고, 이 페이지 순서대로 이전/다음 상품을 열 수 있게 남긴다
+  useEffect(() => {
+    if (typeof window === 'undefined' || items.length === 0) return;
+    saveDashboardContext(
+      `${window.location.pathname}${window.location.search}`,
+      items.map((i) => ({ id: i.product_id, name: i.product_name }))
+    );
+  }, [items]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const listTopRef = useRef<HTMLDivElement>(null);
+
+  const collectionStale = useMemo(() => {
+    if (!lastCollectedAt) return true;
+    const hours = Math.floor((Date.now() - Date.parse(lastCollectedAt)) / 3_600_000);
+    return classifyHealth(hours) !== 'ok';
+  }, [lastCollectedAt]);
+
   // 검색/변동필터/브랜드 중 하나라도 적용돼 부분집합을 보고 있는지
   const isFiltered =
     search.trim() !== '' || filter !== 'all' || brandSelection.size > 0;
@@ -416,8 +458,9 @@ export default function Home() {
     }
     setExporting(true);
     try {
+      // 화면과 같은 순서로 내보내도록 정렬도 함께 넘긴다
       const params = buildDashboardParams(
-        { page: 1, q: search, brandIds: brandIdsArr, filter },
+        { page: 1, q: search, brandIds: brandIdsArr, filter, sort },
         search
       );
       params.set('all', 'true');
@@ -434,7 +477,7 @@ export default function Home() {
     } finally {
       setExporting(false);
     }
-  }, [total, search, brandIdsArr, filter, toast]);
+  }, [total, search, brandIdsArr, filter, sort, toast]);
 
   // 적용된 필터 칩 — 사용자가 무엇이 활성인지 즉시 인지하도록
   const activeChips = useMemo(() => {
@@ -499,8 +542,76 @@ export default function Home() {
     setBrandSelection(new Set());
   }, [setSearch, setFilter, setBrandSelection]);
 
+  // 수집을 막을 것이 확실한 원인 — 확인 단계에서 미리 알려 헛클릭과 실패 토스트를 줄인다
+  const blockingCauses = (health?.causes ?? []).filter(
+    (c) => c.code === 'workflow_disabled' || c.code === 'brightdata_invalid_token' || c.code === 'brightdata_no_balance'
+  );
+
   return (
     <div>
+      <Modal
+        open={confirmCollect !== null}
+        onClose={() => setConfirmCollect(null)}
+        title="가격 수집 시작"
+        size="md"
+      >
+        {confirmCollect && (
+          <div className="space-y-3 text-sm text-gray-700">
+            <p>
+              {confirmCollect.kind === 'all' ? (
+                <>
+                  <strong>활성 상품 전체</strong>
+                  {!isFiltered && summary
+                    ? ` (${summary.totalProducts.toLocaleString('ko-KR')}개)`
+                    : ''}
+                  를 GitHub Actions에서 수집합니다.
+                </>
+              ) : (
+                <>
+                  현재 필터 결과 <strong>{confirmCollect.count.toLocaleString('ko-KR')}개</strong>{' '}
+                  상품을 GitHub Actions에서 수집합니다.
+                </>
+              )}
+            </p>
+            <p className="text-gray-500">
+              채널 호출마다 Bright Data 사용량이 발생하고, 상품 수에 따라 끝나기까지 시간이 걸립니다.
+              진행률은 이 화면 상단에 표시됩니다.
+            </p>
+            {blockingCauses.length > 0 && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+                <div className="font-medium">지금은 수집이 실패할 가능성이 높습니다</div>
+                <ul className="mt-1 space-y-0.5 text-[13px]">
+                  {blockingCauses.map((c) => (
+                    <li key={c.code}>• {c.message}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmCollect(null)}
+                className="min-h-9 px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const kind = confirmCollect.kind;
+                  setConfirmCollect(null);
+                  if (kind === 'all') handleCollect();
+                  else handleCollectFiltered();
+                }}
+                className="min-h-9 px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+              >
+                수집 시작
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       <div className="flex items-center justify-between mb-4 sm:mb-6 flex-wrap gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">현재 최저가 요약</h1>
@@ -518,7 +629,7 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
           <button
-            onClick={handleCollect}
+            onClick={() => setConfirmCollect({ kind: 'all' })}
             disabled={collecting || isActive}
             className="flex-1 sm:flex-none min-h-9 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 text-sm"
           >
@@ -527,9 +638,10 @@ export default function Home() {
           <button
             onClick={handleExportSnapshot}
             disabled={exporting || total === 0}
+            title="지금 화면의 검색·필터·정렬 결과를 현재가 기준으로 내려받습니다. 기간별 이력은 '이력 내보내기' 메뉴에서."
             className="flex-1 sm:flex-none min-h-9 px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 text-sm"
           >
-            {exporting ? '내보내는 중...' : 'Excel 내보내기'}
+            {exporting ? '내보내는 중...' : '현재가 Excel'}
           </button>
         </div>
       </div>
@@ -578,13 +690,16 @@ export default function Home() {
 
       {!loading && !error && summary && panel && (isFiltered || total > 0) && (
         <>
-          <SummaryCards stats={summary} />
+          <SummaryCards
+            stats={summary}
+            collectionStale={collectionStale}
+            isFiltered={search.trim() !== '' || brandSelection.size > 0}
+          />
 
+          {/* 상품 행은 상세로 이동(ActionPanels 기본 링크). 목록 필터는 "전체 보기 →"로만 건다 —
+              행 클릭이 검색어를 바꾸면 상세로 갈 줄 안 사용자가 목록이 줄어든 이유를 모른다. */}
           <ActionPanels
             panel={panel}
-            onProductClick={(item) => {
-              setSearch(item.product_name);
-            }}
             onSelectFilter={(next) => {
               setFilter(next);
               // 필터로 진입하면 검색어는 충돌하므로 비우고, 사용자가 결과를 바로 보도록 스크롤
@@ -609,9 +724,12 @@ export default function Home() {
                 uncategorizedCount={brandCounts.uncategorized}
               />
             </div>
-            {/* 모바일에서는 카드 뷰만, 데스크톱에서는 토글 노출 */}
-            <div className="hidden md:block">
-              <ViewToggle value={view} onChange={setView} />
+            <div className="flex items-center gap-2">
+              <SortSelect value={sort} onChange={setSort} />
+              {/* 모바일에서는 카드 뷰만, 데스크톱에서는 토글 노출 */}
+              <div className="hidden md:block">
+                <ViewToggle value={view} onChange={setView} />
+              </div>
             </div>
           </div>
 
@@ -626,7 +744,7 @@ export default function Home() {
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={handleCollectFiltered}
+                onClick={() => setConfirmCollect({ kind: 'filtered', count: total })}
                 disabled={collecting || isActive}
                 title="현재 필터 결과 전체(페이지 밖 포함)를 GitHub Actions로 일괄 수집"
                 className="inline-flex items-center gap-1.5 min-h-9 px-3 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 text-sm font-medium"
@@ -638,6 +756,18 @@ export default function Home() {
             </div>
           )}
 
+          <div ref={listTopRef} className="scroll-mt-4" />
+          {totalPages > 1 && items.length > 0 && (
+            <div className="mb-3">
+              <Pagination
+                page={page}
+                totalPages={totalPages}
+                totalItems={total}
+                onChange={setPage}
+                compact
+              />
+            </div>
+          )}
           {items.length === 0 ? (
             <div className="bg-white rounded-lg shadow-sm border p-12 text-center text-gray-400">
               조건에 맞는 상품이 없습니다.
@@ -664,6 +794,8 @@ export default function Home() {
                       collectingIds={collectingIds}
                       globalCollecting={isActive}
                       onCollectProduct={handleCollectProduct}
+                      sort={sort}
+                      onSortChange={setSort}
                     />
                   </div>
                 ) : (
@@ -678,32 +810,18 @@ export default function Home() {
               </div>
 
               {/* 페이지네이션 — 서버 페이지 단위 */}
-              {total > PAGE_SIZE && (
-                <div className="mt-4 flex items-center justify-center gap-3 text-sm">
-                  <button
-                    type="button"
-                    onClick={() => setPage(Math.max(1, page - 1))}
-                    disabled={page <= 1}
-                    className="min-h-9 px-3 py-1.5 border border-gray-300 rounded bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    ← 이전
-                  </button>
-                  <span className="text-gray-600 tabular-nums">
-                    {page} / {Math.max(1, Math.ceil(total / PAGE_SIZE))} 페이지
-                    <span className="ml-2 text-gray-400">
-                      (총 {total.toLocaleString('ko-KR')}개)
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setPage(page + 1)}
-                    disabled={page >= Math.ceil(total / PAGE_SIZE)}
-                    className="min-h-9 px-3 py-1.5 border border-gray-300 rounded bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    다음 →
-                  </button>
-                </div>
-              )}
+              <div className="mt-4">
+                <Pagination
+                  page={page}
+                  totalPages={totalPages}
+                  totalItems={total}
+                  onChange={(p) => {
+                    setPage(p);
+                    // 아래쪽 컨트롤로 넘기면 새 페이지의 첫 항목이 보이도록 목록 위로 올린다
+                    listTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                />
+              </div>
             </>
           )}
         </>

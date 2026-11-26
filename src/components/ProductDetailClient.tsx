@@ -6,6 +6,9 @@ import dynamic from 'next/dynamic';
 import { usePriceHistory } from '@/hooks/usePriceHistory';
 import PriceChangeIndicator from '@/components/PriceChangeIndicator';
 import { ChartSkeleton } from '@/components/Skeleton';
+import { useToast } from '@/components/Toast';
+import { HEALTH_DELAYED_HOURS } from '@/lib/collection-health';
+import { loadDashboardUrl, loadNeighbors } from '@/lib/dashboard-nav';
 import type { Channel, PriceLog, Product } from '@/types/database';
 
 // recharts는 무거우므로 상세 페이지에서 지연 로드해 초기 청크에서 제외한다.
@@ -35,7 +38,7 @@ function formatRelativeShort(iso: string | null): string {
   return `${Math.floor(min / (60 * 24))}일 전`;
 }
 
-type Period = '7d' | '30d' | '90d' | 'all';
+export type Period = '7d' | '30d' | '90d' | 'all';
 type ChartMode = 'combined' | 'split';
 type Aggregation = 'daily' | 'raw';
 
@@ -74,7 +77,10 @@ interface Props {
   productId: string;
   initialProduct: Product;
   initialPeriod: Period;
-  initialHistory: PriceLog[];
+  /** 없으면 클라이언트가 initialPeriod로 직접 조회 */
+  initialHistory?: PriceLog[];
+  /** 기본 기간에 기록이 없어 서버가 기간을 넓혔다면 원래 기간 — 안내 문구용 */
+  autoExpandedFrom?: Period | null;
 }
 
 export default function ProductDetailClient({
@@ -82,9 +88,23 @@ export default function ProductDetailClient({
   initialProduct,
   initialPeriod,
   initialHistory,
+  autoExpandedFrom = null,
 }: Props) {
   const product = initialProduct;
   const [period, setPeriod] = useState<Period>(initialPeriod);
+  // 사용자가 기간을 직접 고르면 자동 확장 안내는 더 이상 맞지 않으므로 숨긴다
+  const [showAutoExpandNote, setShowAutoExpandNote] = useState(!!autoExpandedFrom);
+  const toast = useToast();
+  const [collecting, setCollecting] = useState(false);
+  // sessionStorage는 클라이언트 전용이라 마운트 후에 읽는다 (SSR 결과와 첫 렌더를 맞추기 위해)
+  const [nav, setNav] = useState<{
+    backHref: string;
+    prev: { id: string; name: string } | null;
+    next: { id: string; name: string } | null;
+  }>({ backHref: '/', prev: null, next: null });
+  useEffect(() => {
+    setNav({ backHref: loadDashboardUrl(), ...loadNeighbors(productId) });
+  }, [productId]);
   const [chartMode, setChartMode] = useState<ChartMode>('combined');
   const [aggregation, setAggregation] = useState<Aggregation>('daily');
   const [chartChannels, setChartChannels] = useState<Set<Channel>>(
@@ -96,7 +116,7 @@ export default function ProductDetailClient({
 
   const startDate = useMemo(() => getStartDate(period), [period]);
 
-  const { data, loading, error } = usePriceHistory(
+  const { data, loading, error, refetch } = usePriceHistory(
     productId,
     { startDate },
     initialHistory
@@ -104,6 +124,7 @@ export default function ProductDetailClient({
 
   // 채널별 마지막 실패 정보 — 헤더의 수집 상태 라인에 표시
   const [channelErrors, setChannelErrors] = useState<ChannelErrorSummary[]>([]);
+  const [errorsVersion, setErrorsVersion] = useState(0);
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/errors?group_by=product_channel&product_id=${productId}`)
@@ -116,7 +137,38 @@ export default function ProductDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [productId]);
+  }, [productId, errorsVersion]);
+
+  const handleCollect = async () => {
+    if (collecting) return;
+    setCollecting(true);
+    try {
+      const res = await fetch(`/api/collect/product/${productId}`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || '수집 요청 실패');
+        return;
+      }
+      const ok = body.success ?? 0;
+      const failed = body.failed ?? 0;
+      if (ok > 0 && failed === 0) toast.success(`수집 완료: ${ok}개 채널 성공`);
+      else if (ok > 0) toast.show(`수집 완료: ${ok}개 성공, ${failed}개 실패`, 'info');
+      else toast.error(`수집 실패: ${failed}개 채널 모두 실패`);
+      // 새 값이 보이도록 이력·채널 에러를 다시 읽는다. 기간이 넓혀져 있었다면 최신 기록이
+      // 기본 기간에 들어오므로 기본 기간으로 되돌린다.
+      if (autoExpandedFrom && ok > 0) {
+        setShowAutoExpandNote(false);
+        setPeriod(autoExpandedFrom);
+      } else {
+        refetch();
+      }
+      setErrorsVersion((v) => v + 1);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '수집 요청 중 오류');
+    } finally {
+      setCollecting(false);
+    }
+  };
 
   // 채널별 최신/이전 가격 (헤더용)
   const channelLatest = useMemo(() => {
@@ -292,18 +344,58 @@ export default function ProductDetailClient({
   const onPeriodChange = (p: Period) => {
     setPeriod(p);
     setLogPage(1);
+    setShowAutoExpandNote(false);
   };
+
+  // 헤더의 "현재 최저가"가 실은 며칠 전 값일 수 있다 — 지연 기준을 넘으면 라벨을 바꾼다
+  const overallStaleDate =
+    overall &&
+    Date.now() - Date.parse(overall.latest.collected_at) >= HEALTH_DELAYED_HOURS * 3_600_000
+      ? new Date(overall.latest.collected_at).toLocaleDateString('ko-KR')
+      : null;
 
   return (
     <div>
       {/* === A. 헤더 === */}
       <div className="mb-4 sm:mb-6">
-        <Link
-          href="/"
-          className="text-sm text-blue-600 hover:underline inline-flex items-center gap-1 mb-2"
-        >
-          ← 대시보드로
-        </Link>
+        <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+          <Link
+            href={nav.backHref}
+            className="text-sm text-blue-600 hover:underline inline-flex items-center gap-1"
+          >
+            ← 대시보드로
+          </Link>
+          {(nav.prev || nav.next) && (
+            <div className="flex items-center gap-1.5 text-sm">
+              {nav.prev ? (
+                <Link
+                  href={`/products/${nav.prev.id}`}
+                  title={nav.prev.name}
+                  className="min-h-8 inline-flex items-center px-2.5 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
+                >
+                  ← 이전 상품
+                </Link>
+              ) : (
+                <span className="min-h-8 inline-flex items-center px-2.5 py-1 rounded border border-gray-200 text-gray-300">
+                  ← 이전 상품
+                </span>
+              )}
+              {nav.next ? (
+                <Link
+                  href={`/products/${nav.next.id}`}
+                  title={nav.next.name}
+                  className="min-h-8 inline-flex items-center px-2.5 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
+                >
+                  다음 상품 →
+                </Link>
+              ) : (
+                <span className="min-h-8 inline-flex items-center px-2.5 py-1 rounded border border-gray-200 text-gray-300">
+                  다음 상품 →
+                </span>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="flex flex-col gap-1">
             {product.brand_name && (
@@ -315,12 +407,29 @@ export default function ProductDetailClient({
               {product.name}
             </h1>
           </div>
-          <Link
-            href={`/products/manage?id=${productId}`}
-            className="min-h-9 inline-flex items-center px-3 py-1.5 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50"
-          >
-            ✏ 상품 관리
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCollect}
+              disabled={collecting}
+              className="min-h-9 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {collecting ? (
+                <>
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  수집 중…
+                </>
+              ) : (
+                '↻ 지금 수집'
+              )}
+            </button>
+            <Link
+              href={`/products/manage?id=${productId}`}
+              className="min-h-9 inline-flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded text-gray-700 hover:bg-gray-50"
+            >
+              ✏ 상품 관리
+            </Link>
+          </div>
         </div>
 
         {/* 현재 최저가 + 채널별 인라인 가격 */}
@@ -328,7 +437,13 @@ export default function ProductDetailClient({
           {overall ? (
             <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
               <div>
-                <div className="text-xs text-gray-500 mb-1">현재 최저가</div>
+                {overallStaleDate ? (
+                  <div className="text-xs text-amber-700 mb-1">
+                    마지막 수집 최저가 · {overallStaleDate} 기준
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500 mb-1">현재 최저가</div>
+                )}
                 <div className="flex items-baseline gap-2 flex-wrap">
                   <span className="text-2xl sm:text-3xl font-bold text-gray-900 tabular-nums">
                     {overall.latest.price.toLocaleString('ko-KR')}원
@@ -400,7 +515,7 @@ export default function ProductDetailClient({
                       ) : (
                         <div className="text-xs sm:text-sm text-gray-400 mt-0.5">없음</div>
                       )}
-                      <div className="mt-1 text-[10px] leading-tight space-y-0.5">
+                      <div className="mt-1 text-xs leading-tight space-y-0.5">
                         <div className="text-gray-500">
                           ✓ {formatRelativeShort(lastSuccess)}
                         </div>
@@ -437,10 +552,20 @@ export default function ProductDetailClient({
             </div>
           ) : (
             <div className="text-gray-400 text-sm">
-              {loading ? '로딩 중...' : '수집된 가격이 없습니다.'}
+              {loading
+                ? '로딩 중...'
+                : period === 'all'
+                  ? '수집된 가격이 없습니다.'
+                  : `최근 ${PERIOD_LABELS[period]} 동안 수집된 가격이 없습니다. 기간을 '전체'로 바꿔 보세요.`}
             </div>
           )}
         </div>
+        {showAutoExpandNote && autoExpandedFrom && (
+          <div className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+            최근 {PERIOD_LABELS[autoExpandedFrom]} 동안 수집 기록이 없어 &lsquo;{PERIOD_LABELS[period]}&rsquo;
+            기간으로 보여줍니다.
+          </div>
+        )}
       </div>
 
       {error && <div className="text-center py-12 text-red-500">오류: {error}</div>}
@@ -513,7 +638,8 @@ export default function ProductDetailClient({
             <div className="p-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-base font-semibold text-gray-800">가격 추이</h2>
               <div className="flex flex-wrap items-center gap-2">
-                {/* 기간 토글 */}
+                {/* 기간 토글 — 세 토글 묶음이 무엇을 바꾸는지 눌러보지 않아도 알 수 있게 라벨을 붙인다 */}
+                <span className="text-[11px] text-gray-500">기간</span>
                 <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-xs">
                   {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
                     <button
@@ -530,9 +656,11 @@ export default function ProductDetailClient({
                   ))}
                 </div>
                 {/* 모드 토글 */}
+                <span className="ml-1 text-[11px] text-gray-500">차트</span>
                 <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-xs">
                   <button
                     onClick={() => setChartMode('combined')}
+                    title="세 채널을 한 차트에 겹쳐 표시"
                     className={`px-3 py-1.5 ${
                       chartMode === 'combined'
                         ? 'bg-blue-600 text-white'
@@ -543,6 +671,7 @@ export default function ProductDetailClient({
                   </button>
                   <button
                     onClick={() => setChartMode('split')}
+                    title="채널마다 차트를 따로 표시"
                     className={`px-3 py-1.5 border-l border-gray-300 ${
                       chartMode === 'split'
                         ? 'bg-blue-600 text-white'
@@ -553,6 +682,7 @@ export default function ProductDetailClient({
                   </button>
                 </div>
                 {/* 집계 토글 — 일별 최저 vs 모든 시점 */}
+                <span className="ml-1 text-[11px] text-gray-500">표시</span>
                 <div className="inline-flex rounded-md border border-gray-300 overflow-hidden text-xs">
                   <button
                     onClick={() => setAggregation('daily')}
@@ -794,7 +924,7 @@ function KpiCard({ label, value, sub, tone = 'neutral' }: KpiCardProps) {
     <div className={`rounded-lg border p-2.5 sm:p-3 ${toneClass}`}>
       <div className="text-[11px] sm:text-xs font-medium opacity-80">{label}</div>
       <div className="text-base sm:text-lg font-bold mt-1 tabular-nums">{value}</div>
-      {sub && <div className="text-[10px] sm:text-[11px] opacity-70 mt-0.5">{sub}</div>}
+      {sub && <div className="text-xs sm:text-[11px] opacity-70 mt-0.5">{sub}</div>}
     </div>
   );
 }

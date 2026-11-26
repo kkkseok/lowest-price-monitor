@@ -5,9 +5,17 @@ import type { SummaryStats } from '@/types/database';
 interface SummaryCardsProps {
   /** 서버(api/dashboard)가 전체 필터셋 기준으로 집계한 값 — 페이지 슬라이스 아님 */
   stats: SummaryStats;
+  /** 마지막 수집이 지연 기준을 넘었는지 — 실패 0건을 "실패 없음"으로 오독하지 않게 */
+  collectionStale?: boolean;
+  /** 검색·브랜드 필터가 걸려 stats가 부분집합 기준인지 — "총 상품"으로 오독하지 않게 라벨 변경 */
+  isFiltered?: boolean;
 }
 
-export default function SummaryCards({ stats }: SummaryCardsProps) {
+export default function SummaryCards({
+  stats,
+  collectionStale = false,
+  isFiltered = false,
+}: SummaryCardsProps) {
   const avg = stats.averageChangePct;
   const avgColor =
     avg === null
@@ -24,7 +32,11 @@ export default function SummaryCards({ stats }: SummaryCardsProps) {
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-6">
-      <Card label="총 상품" value={`${stats.totalProducts}개`} tone="neutral" />
+      <Card
+        label={isFiltered ? '검색·필터 결과' : '총 상품'}
+        value={`${stats.totalProducts.toLocaleString('ko-KR')}개`}
+        tone="neutral"
+      />
       <Card
         label="가격 변동 상품"
         value={`${stats.changedProducts}개`}
@@ -41,11 +53,16 @@ export default function SummaryCards({ stats }: SummaryCardsProps) {
         valueColor={avgColor}
         tone="neutral"
       />
-      <Card
-        label="수집 실패 채널"
-        value={`${stats.failedChannels}건`}
-        tone={stats.failedChannels > 0 ? 'danger' : 'neutral'}
-      />
+      {collectionStale && stats.failedChannels === 0 ? (
+        // 수집이 멈추면 실패도 기록되지 않아 "0건"이 정상처럼 읽힌다 — 시도 자체가 없음을 표시
+        <Card label="수집 실패 채널" value="-" sub="최근 수집 시도 없음" tone="warn" />
+      ) : (
+        <Card
+          label="수집 실패 채널"
+          value={`${stats.failedChannels}건`}
+          tone={stats.failedChannels > 0 ? 'danger' : 'neutral'}
+        />
+      )}
     </div>
   );
 }
@@ -54,7 +71,7 @@ interface CardProps {
   label: string;
   value: string;
   sub?: string;
-  tone: 'neutral' | 'highlight' | 'danger';
+  tone: 'neutral' | 'highlight' | 'danger' | 'warn';
   valueColor?: string;
 }
 
@@ -63,6 +80,7 @@ function Card({ label, value, sub, tone, valueColor }: CardProps) {
     neutral: 'bg-white border-gray-200',
     highlight: 'bg-blue-50 border-blue-200',
     danger: 'bg-red-50 border-red-200',
+    warn: 'bg-amber-50 border-amber-200',
   }[tone];
   return (
     <div className={`rounded-lg border p-4 ${toneClass}`}>

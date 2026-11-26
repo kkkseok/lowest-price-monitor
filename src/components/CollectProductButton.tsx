@@ -23,10 +23,8 @@ export default function CollectProductButton({
       ? (disabledTitle ?? '전체 수집이 진행 중입니다')
       : '이 상품만 즉시 수집';
 
-  const sizeClass =
-    size === 'sm'
-      ? 'w-6 h-6 text-[11px]'
-      : 'w-7 h-7 text-xs';
+  // 24px 미만 타깃은 마우스로도 빗맞기 쉽다 — 최소 32px
+  const sizeClass = size === 'sm' ? 'w-8 h-8 text-sm' : 'w-9 h-9 text-base';
 
   return (
     <button
