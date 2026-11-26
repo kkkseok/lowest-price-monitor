@@ -1,0 +1,38 @@
+# GitHub Actions 러너(데이터센터 IP)에서 Bright Data 없이 직접 수집이 되는지 측정하는 일회성 프로브.
+# DB는 읽기만 하고 Bright Data는 호출하지 않는다. 공개 저장소라 로그에 URL·가격을 남기지 않는다.
+name: Probe Scrapling (direct fetch)
+
+on:
+  push:
+    branches: ['probe/scrapling-ci']
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Scrapling (HTTP fetcher only, no browsers)
+        run: pip install "scrapling[fetchers]==0.5.1"
+
+      - name: Sample product URLs (read-only)
+        run: npx tsx scripts/probe/sample-urls.ts "$RUNNER_TEMP/urls.json" 10
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Probe naver / danawa / coupang
+        run: python -I scripts/probe/scrapling_probe.py "$RUNNER_TEMP/urls.json" naver danawa coupang
